@@ -10,6 +10,8 @@ namespace bp = boost::python;
 #include <string>
 #include <vector>
 
+#include <mpi.h>
+
 #include "boost/algorithm/string.hpp"
 #include "caffe/caffe.hpp"
 #include "caffe/util/signal_handler.h"
@@ -25,16 +27,14 @@ using caffe::Timer;
 using caffe::vector;
 using std::ostringstream;
 
-DEFINE_string(gpu, "",
-    "Optional; run in GPU mode on given device IDs separated by ','."
-    "Use '-gpu all' to run on all available GPUs. The effective training "
-    "batch size is multiplied by the number of devices.");
+DEFINE_string(gpu, "0",
+    "Optional; run in GPU mode on given device ID, separate IDs by commas to specify a GPU for each MPI task.");
 DEFINE_string(solver, "",
-    "The solver definition protocol buffer text file.");
+    "The solver definition protocol buffer text file, separate IDs by commas to specify a GPU for each MPI task.");
 DEFINE_string(model, "",
-    "The model definition protocol buffer text file..");
+    "The model definition protocol buffer text file, separate IDs by commas to specify a GPU for each MPI task.");
 DEFINE_string(snapshot, "",
-    "Optional; the snapshot solver state to resume training.");
+    "Optional; the snapshot solver state to resume training, separate IDs by commas to specify a GPU for each MPI task.");
 DEFINE_string(weights, "",
     "Optional; the pretrained weights to initialize finetuning, "
     "separated by ','. Cannot be set simultaneously with snapshot.");
@@ -46,6 +46,17 @@ DEFINE_string(sigint_effect, "stop",
 DEFINE_string(sighup_effect, "snapshot",
              "Optional; action to take when a SIGHUP signal is received: "
              "snapshot, stop or none.");
+
+vector<std::string> weights_;
+vector<std::string> snapshots_;
+vector<std::string> models_;
+vector<std::string> solvers_;
+vector<std::string> gpus_;
+
+int mpi_rank_;
+int mpi_world_size_;
+int gpu_id;
+
 
 // A simple registry for caffe commands.
 typedef int (*BrewFunction)();
@@ -79,25 +90,7 @@ static BrewFunction GetBrewFunction(const caffe::string& name) {
 
 // Parse GPU ids or use all available devices
 static void get_gpus(vector<int>* gpus) {
-  if (FLAGS_gpu == "all") {
-    int count = 0;
-#ifndef CPU_ONLY
-    CUDA_CHECK(cudaGetDeviceCount(&count));
-#else
-    NO_GPU;
-#endif
-    for (int i = 0; i < count; ++i) {
-      gpus->push_back(i);
-    }
-  } else if (FLAGS_gpu.size()) {
-    vector<string> strings;
-    boost::split(strings, FLAGS_gpu, boost::is_any_of(","));
-    for (int i = 0; i < strings.size(); ++i) {
-      gpus->push_back(boost::lexical_cast<int>(strings[i]));
-    }
-  } else {
-    CHECK_EQ(gpus->size(), 0);
-  }
+  gpus->push_back(gpu_id);
 }
 
 // caffe commands to call by
@@ -157,7 +150,10 @@ int train() {
       "but not both.";
 
   caffe::SolverParameter solver_param;
-  caffe::ReadSolverParamsFromTextFileOrDie(FLAGS_solver, &solver_param);
+  if(solvers_.size() == 1)
+    caffe::ReadSolverParamsFromTextFileOrDie(FLAGS_solver, &solver_param);
+  else
+    caffe::ReadSolverParamsFromTextFileOrDie(solvers_[mpi_rank_], &solver_param);
 
   // If the gpus flag is not provided, allow the mode and device to be set
   // in the solver prototxt.
@@ -198,11 +194,23 @@ int train() {
 
   solver->SetActionFunction(signal_handler.GetActionFunction());
 
+
   if (FLAGS_snapshot.size()) {
-    LOG(INFO) << "Resuming from " << FLAGS_snapshot;
-    solver->Restore(FLAGS_snapshot.c_str());
-  } else if (FLAGS_weights.size()) {
-    CopyLayers(solver.get(), FLAGS_weights);
+    if(snapshots_.size() == 1){
+      LOG(INFO) << "Resuming from " << FLAGS_snapshot;
+      solver->Restore(FLAGS_snapshot.c_str());
+    }else{
+      LOG(INFO) << "Resuming from " << snapshots_[mpi_rank_];
+      solver->Restore(snapshots_[mpi_rank_].c_str());
+    }
+  }
+  
+  if (FLAGS_weights.size()) {
+    if(weights_.size() == 1){
+      CopyLayers(solver.get(), FLAGS_weights);
+    }else{
+      CopyLayers(solver.get(), weights_[mpi_rank_].c_str());
+    }
   }
 
   if (gpus.size() > 1) {
@@ -234,9 +242,22 @@ int test() {
     LOG(INFO) << "Use CPU.";
     Caffe::set_mode(Caffe::CPU);
   }
+
   // Instantiate the caffe net.
-  Net<float> caffe_net(FLAGS_model, caffe::TEST);
-  caffe_net.CopyTrainedLayersFrom(FLAGS_weights);
+  string model;
+  if(models_.size() == 1)
+    model = FLAGS_model;
+  else
+    model = models_[mpi_rank_];
+
+  Net<float> caffe_net(model, caffe::TEST);
+
+  if(weights_.size() == 1){
+    caffe_net.CopyTrainedLayersFrom(FLAGS_weights);
+  }else{
+    caffe_net.CopyTrainedLayersFrom(weights_[mpi_rank_]);
+  }
+  
   LOG(INFO) << "Running for " << FLAGS_iterations << " iterations.";
 
   vector<Blob<float>* > bottom_vec;
@@ -375,6 +396,23 @@ int time() {
 }
 RegisterBrewFunction(time);
 
+
+vector<std::string> tokenizer(const std::string in, const std::string del){
+  char *pch, str[strlen(in.c_str())]; 
+  strcpy(str, in.c_str());
+
+  pch = strtok(str,del.c_str());
+  vector<std::string> tokens;
+  
+  while(pch != NULL){
+    std::string temp(pch);
+    tokens.push_back(temp);
+    pch = strtok(NULL,del.c_str());
+  }
+
+  return tokens;
+}
+
 int main(int argc, char** argv) {
   // Print output to stderr (while still logging).
   FLAGS_alsologtostderr = 1;
@@ -388,6 +426,47 @@ int main(int argc, char** argv) {
       "  time            benchmark model execution time");
   // Run tool or show usage.
   caffe::GlobalInit(&argc, &argv);
+
+
+
+  MPI_Init(NULL,NULL);
+  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank_);
+  MPI_Comm_size(MPI_COMM_WORLD, &mpi_world_size_);
+  LOG(INFO) << "Initilized MPI environment. Process rank " << mpi_rank_ << " with " << mpi_world_size_ << " processes participating.";
+
+  if(FLAGS_weights.size() > 0){
+    weights_ = tokenizer(FLAGS_weights, ",");
+    CHECK(weights_.size() == 1 || weights_.size() == mpi_world_size_) << "Must specify either 1 weight for all MPI tasks or 1 for each MPI task.";
+  }
+
+  if(FLAGS_snapshot.size() > 0){
+    snapshots_ = tokenizer(FLAGS_snapshot, ",");
+    CHECK(snapshots_.size() == 1 || snapshots_.size() == mpi_world_size_) << "Must specify either 1 snapshot for all MPI tasks or 1 for each MPI task.";
+  }
+
+  if(FLAGS_solver.size() > 0){
+    solvers_ = tokenizer(FLAGS_solver, ",");
+    CHECK(solvers_.size() == 1 || solvers_.size() == mpi_world_size_) << "Must specify either 1 solver for all MPI tasks or 1 for each MPI task.";
+  }
+
+  if(FLAGS_model.size() > 0){
+    models_ = tokenizer(FLAGS_model, ",");
+    CHECK(models_.size() == 1 || models_.size() == mpi_world_size_) << "Must specify either 1 model for all MPI tasks or 1 for each MPI task.";
+  }
+
+
+  if(FLAGS_gpu.size() > 0){
+    gpus_ = tokenizer(FLAGS_gpu, ",");
+    CHECK(gpus_.size() == 1 || gpus_.size() == mpi_world_size_) << "Must specify either 1 gpu for all MPI tasks or 1 for each MPI task.";
+  }
+
+  if(gpus_.size() == 1)
+    gpu_id = atoi(gpus_[0].c_str());
+  else{
+    gpu_id = atoi(gpus_[mpi_rank_].c_str());
+  }
+
+
   if (argc == 2) {
 #ifdef WITH_PYTHON_LAYER
     try {

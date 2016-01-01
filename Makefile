@@ -285,15 +285,8 @@ ifdef CUSTOM_CXX
 	CXX := $(CUSTOM_CXX)
 endif
 
-# Static linking
-ifneq (,$(findstring clang++,$(CXX)))
-	STATIC_LINK_COMMAND := -Wl,-force_load $(STATIC_NAME)
-else ifneq (,$(findstring g++,$(CXX)))
-	STATIC_LINK_COMMAND := -Wl,--whole-archive $(STATIC_NAME) -Wl,--no-whole-archive
-else
-  # The following line must not be indented with a tab, since we are not inside a target
-  $(error Cannot static link with the $(CXX) compiler)
-endif
+
+STATIC_LINK_COMMAND := -Wl,-force_load $(STATIC_NAME)
 
 # Debugging
 ifeq ($(DEBUG), 1)
@@ -633,35 +626,4 @@ supercleanfiles:
 supercleanlist: supercleanfiles
 	@ \
 	if [ -z "$(SUPERCLEAN_FILES)" ]; then \
-		echo "No generated files found."; \
-	else \
-		echo $(SUPERCLEAN_FILES) | tr ' ' '\n'; \
-	fi
-
-superclean: clean supercleanfiles
-	@ \
-	if [ -z "$(SUPERCLEAN_FILES)" ]; then \
-		echo "No generated files found."; \
-	else \
-		echo "Deleting the following generated files:"; \
-		echo $(SUPERCLEAN_FILES) | tr ' ' '\n'; \
-		$(RM) $(SUPERCLEAN_FILES); \
-	fi
-
-$(DIST_ALIASES): $(DISTRIBUTE_DIR)
-
-$(DISTRIBUTE_DIR): all py | $(DISTRIBUTE_SUBDIRS)
-	# add include
-	cp -r include $(DISTRIBUTE_DIR)/
-	mkdir -p $(DISTRIBUTE_DIR)/include/caffe/proto
-	cp $(PROTO_GEN_HEADER_SRCS) $(DISTRIBUTE_DIR)/include/caffe/proto
-	# add tool and example binaries
-	cp $(TOOL_BINS) $(DISTRIBUTE_DIR)/bin
-	cp $(EXAMPLE_BINS) $(DISTRIBUTE_DIR)/bin
-	# add libraries
-	cp $(STATIC_NAME) $(DISTRIBUTE_DIR)/lib
-	install -m 644 $(DYNAMIC_NAME) $(DISTRIBUTE_DIR)/lib
-	# add python - it's not the standard way, indeed...
-	cp -r python $(DISTRIBUTE_DIR)/python
-
--include $(DEPS)
+		

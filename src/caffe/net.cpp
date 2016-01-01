@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include <mpi.h>
 #include "hdf5.h"
 
 #include "caffe/common.hpp"
@@ -168,6 +169,9 @@ void Net<Dtype>::Init(const NetParameter& in_param) {
     const int num_param_blobs = layers_[layer_id]->blobs().size();
     CHECK_LE(param_size, num_param_blobs)
         << "Too many params specified for layer " << layer_param.name();
+
+    need_backward = layers_[layer_id]->MPISyncFlag(need_backward);
+
     ParamSpec default_param_spec;
     for (int param_id = 0; param_id < num_param_blobs; ++param_id) {
       const ParamSpec* param_spec = (param_id < param_size) ?
@@ -211,6 +215,10 @@ void Net<Dtype>::Init(const NetParameter& in_param) {
       if (layer_contributes_loss && !layer_skip_propagate_down)
         break;
     }
+
+    layer_contributes_loss = layers_[layer_id]->MPISyncFlag(layer_contributes_loss); 
+    layer_skip_propagate_down = !layers_[layer_id]->MPISyncFlag(!layer_skip_propagate_down); 
+
     // If this layer can skip backward computation, also all his bottom blobs
     // don't need backpropagation
     if (layer_need_backward_[layer_id] && layer_skip_propagate_down) {
@@ -283,6 +291,85 @@ void Net<Dtype>::Init(const NetParameter& in_param) {
   LOG_IF(INFO, Caffe::root_solver()) << "Network initialization done.";
 }
 
+
+template <typename Dtype>
+void Net<Dtype>::AdjustForMPIRank(LayerParameter& layer_param) {
+  int rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  if(layer_param.type() == "MPIBroadcast"){
+    if(layer_param.mpi_param().root() != rank){
+      layer_param.clear_bottom();
+    }
+  }
+  
+  if(layer_param.type() == "MPIGather"){
+    if(layer_param.mpi_param().root() != rank){
+      layer_param.clear_top();
+    }
+  }
+
+}
+
+template <typename Dtype>
+void Net<Dtype>::EstablishMPIComm(LayerParameter* param){
+  if(param->type().find("MPI") != string::npos){
+
+      MPI_Group world_group, local_group;
+      MPI_Comm local_comm;
+
+      MPI_Comm_group(MPI_COMM_WORLD, &world_group);
+      local_group = world_group;
+
+      int world_size;
+      int world_rank;
+      MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+      MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+
+      int ranks[world_size], er, n=0;
+
+      if(param->include_size() > 0){
+        //Look through include rules for an mpi requirement
+        for(int i = 0; i < param->include_size(); i++){
+            for(int j = 0; j < param->include(i).mpi_rank_size(); j++){
+              ranks[n] = param->include(i).mpi_rank(j);
+              n++;
+            }
+        }
+        if(n > 0){
+          er = MPI_Group_incl(world_group, n, ranks, &local_group);
+          CHECK(er == MPI_SUCCESS) << "[" << param->name() << "]" << "Group creation failed: code " << er;
+        }
+      }
+
+      if(param->exclude_size() > 0){
+        //Look through exclude rules for an mpi requirement
+        for(int i = 0; i < param->exclude_size(); i++){
+            for(int j = 0; j < param->exclude(i).mpi_rank_size(); j++){
+              ranks[n] = param->exclude(i).mpi_rank(j);
+              n++;
+            }
+        }
+        if(n > 0){
+          er = MPI_Group_excl(world_group, n, ranks, &local_group);
+          CHECK(er == MPI_SUCCESS) << "[" << param->name() << "]" << "Group creation failed: code " << er;
+        }
+      }
+
+      er = MPI_Comm_create(MPI_COMM_WORLD, local_group, &local_comm);
+      CHECK(er == MPI_SUCCESS) << "[" << param->name() << "]" << "Comm creation failed: code " << er;
+
+      if(local_comm != MPI_COMM_NULL){
+        MPI_Comm_size(local_comm, &world_size);
+        LOG(INFO) << "[" << world_rank << "] Layer " << param->name() << " successfully created MPI comm group of " << world_size << " members.";
+      }
+
+      param->mutable_mpi_param()->set_comm_id((google::protobuf::uint64)local_comm);
+      param->mutable_mpi_param()->set_group_id((google::protobuf::uint64)local_group);
+
+  }
+}
+
 template <typename Dtype>
 void Net<Dtype>::FilterNet(const NetParameter& param,
     NetParameter* param_filtered) {
@@ -290,7 +377,8 @@ void Net<Dtype>::FilterNet(const NetParameter& param,
   param_filtered->CopyFrom(param);
   param_filtered->clear_layer();
   for (int i = 0; i < param.layer_size(); ++i) {
-    const LayerParameter& layer_param = param.layer(i);
+    LayerParameter layer_param;
+    layer_param.CopyFrom(param.layer(i));
     const string& layer_name = layer_param.name();
     CHECK(layer_param.include_size() == 0 || layer_param.exclude_size() == 0)
           << "Specify either include rules or exclude rules; not both.";
@@ -307,7 +395,11 @@ void Net<Dtype>::FilterNet(const NetParameter& param,
         layer_included = true;
       }
     }
+
+    EstablishMPIComm(&layer_param);
+
     if (layer_included) {
+      AdjustForMPIRank(layer_param);
       param_filtered->add_layer()->CopyFrom(layer_param);
     }
   }
@@ -316,6 +408,23 @@ void Net<Dtype>::FilterNet(const NetParameter& param,
 template <typename Dtype>
 bool Net<Dtype>::StateMeetsRule(const NetState& state,
     const NetStateRule& rule, const string& layer_name) {
+  
+  // Check whether the rule is broken due to phase.
+  int rank;
+  bool hasRank = false;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  if (rule.mpi_rank_size() > 0) {
+      for(int i = 0; i < rule.mpi_rank_size(); i++)
+        if (rule.mpi_rank(i) == rank) 
+          hasRank = true;
+
+      if(!hasRank){
+        LOG(INFO) << "The MPI rank (" << rank
+        << ") is not contained in rank rules listed in " << layer_name;
+        return false;
+      } 
+  }
+
   // Check whether the rule is broken due to phase.
   if (rule.has_phase()) {
       if (rule.phase() != state.phase()) {

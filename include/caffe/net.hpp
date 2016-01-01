@@ -212,8 +212,12 @@ class Net {
   static bool StateMeetsRule(const NetState& state, const NetStateRule& rule,
       const string& layer_name);
 
+  static void AdjustForMPIRank(LayerParameter& layer_param);
+  static void EstablishMPIComm(LayerParameter* param);
+
  protected:
   // Helpers for Init.
+
   /// @brief Append a new input or top blob to the net.
   void AppendTop(const NetParameter& param, const int layer_id,
                  const int top_id, set<string>* available_blobs,

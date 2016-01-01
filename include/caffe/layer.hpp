@@ -317,6 +317,9 @@ class Layer {
   }
 
 
+  
+  virtual bool MPISyncFlag(bool flag) { return flag; }
+
  protected:
   /** The protobuf that stores the layer parameters */
   LayerParameter layer_param_;

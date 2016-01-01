@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <mpi.h>
 
 #include "caffe/solver.hpp"
 #include "caffe/util/format.hpp"
@@ -449,8 +450,10 @@ void Solver<Dtype>::CheckSnapshotWritePermissions() {
 
 template <typename Dtype>
 string Solver<Dtype>::SnapshotFilename(const string extension) {
+  int rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank); 
   return param_.snapshot_prefix() + "_iter_" + caffe::format_int(iter_)
-    + extension;
+    + "_rank_" + caffe::format_int(rank) + extension;
 }
 
 template <typename Dtype>

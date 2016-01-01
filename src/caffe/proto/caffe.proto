@@ -276,6 +276,9 @@ message NetStateRule {
   // (Use multiple NetStateRules to specify conjunctions of stages.)
   repeated string stage = 4;
   repeated string not_stage = 5;
+
+  //MPI rank
+  repeated uint32 mpi_rank = 6;
 }
 
 // Specifies training parameters (multipliers on global learning constants,
@@ -306,7 +309,7 @@ message ParamSpec {
 // NOTE
 // Update the next available ID when you add a new LayerParameter field.
 //
-// LayerParameter next available layer-specific ID: 140 (last added: batch_norm_param)
+// LayerParameter next available layer-specific ID: 141 (last added: mpi_param)
 message LayerParameter {
   optional string name = 1; // the layer name
   optional string type = 2; // the layer type
@@ -375,6 +378,7 @@ message LayerParameter {
   optional LogParameter log_param = 134;
   optional LRNParameter lrn_param = 118;
   optional MemoryDataParameter memory_data_param = 119;
+  optional MPIParameter mpi_param = 140;
   optional MVNParameter mvn_param = 120;
   optional PoolingParameter pooling_param = 121;
   optional PowerParameter power_param = 122;
@@ -779,6 +783,12 @@ message MemoryDataParameter {
   optional uint32 channels = 2;
   optional uint32 height = 3;
   optional uint32 width = 4;
+}
+
+message MPIParameter {
+  optional uint32 root = 1 [default = 0];
+  optional uint64 comm_id = 2 [default = 0];
+  optional uint64 group_id = 3 [default = 0];
 }
 
 message MVNParameter {
