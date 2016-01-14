@@ -1,4 +1,4 @@
-# mpi-caffe
+![# mpi-caffe](http://homes.soic.indiana.edu/steflee/images/banner.png)
 
 mpi-caffe combines the modularity of the popular [Caffe](http://caffe.berkeleyvision.org) deep learning framework with the powerful Message Passing Interface (MPI) standard -- enabling simple, modular design of deep networks that span multiple machines! 
 
