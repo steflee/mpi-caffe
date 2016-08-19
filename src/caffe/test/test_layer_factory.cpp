@@ -28,6 +28,8 @@ TYPED_TEST(LayerFactoryTest, TestCreateLayer) {
        registry.begin(); iter != registry.end(); ++iter) {
     // Special case: PythonLayer is checked by pytest
     if (iter->first == "Python") { continue; }
+    if (iter->first == "MPIBroadcast") {continue;}
+    if (iter->first == "MPIGather") {continue;}
     LayerParameter layer_param;
     // Data layers expect a DB
     if (iter->first == "Data") {

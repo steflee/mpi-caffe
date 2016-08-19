@@ -3,6 +3,7 @@
 
 #include "caffe/caffe.hpp"
 #include "caffe/test/test_caffe_main.hpp"
+#include "mpi.h"
 
 namespace caffe {
 #ifndef CPU_ONLY
@@ -17,6 +18,8 @@ using caffe::CAFFE_TEST_CUDA_PROP;
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   caffe::GlobalInit(&argc, &argv);
+
+  MPI_Init(NULL,NULL);
 #ifndef CPU_ONLY
   // Before starting testing, let's first print out a few cuda defice info.
   int device;
